@@ -19,6 +19,14 @@ DEFAULT_RAILWAY_TAGS = [
 ]
 
 
+def check_osmium() -> bool:
+    try:
+        subprocess.run(["osmium", "--version"])
+    except FileNotFoundError:
+        return False
+    return True
+
+
 def tags_filter(
     file_path: Path | str,
     *,
