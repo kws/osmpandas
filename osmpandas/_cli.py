@@ -43,24 +43,24 @@ def filter(input_file: str, *, force: bool, no_progress: bool, file_suffix: str)
 @click.argument("input_file", type=click.Path(exists=True))
 @click.argument("output_file", type=click.Path(), default=None)
 def convert(input_file: str, output_file: str | None):
-    from osmpandas.data import OSMDataPackage
+    from osmpandas.osm_parser import convert_osm_to_parquet
 
     input_file = Path(input_file)
-    with progress_counter() as progress_callback:
-        data = OSMDataPackage.from_osm(input_file, progress_callback=progress_callback)
 
     if output_file is None:
         if input_file.name.endswith(".osm.pbf"):
             output_file = input_file.name.replace(".osm.pbf", ".osmpkg")
         else:
             output_file = input_file.with_suffix(".osmpkg")
-    data.save(output_file)
+
+    with progress_counter() as progress_callback:
+        convert_osm_to_parquet(input_file, output_file, progress_callback=progress_callback)
 
 
 @cli.command()
 @click.argument("input_file", type=click.Path(exists=True))
 def load(input_file: str):
-    from osmpandas.data import OSMDataPackage
+    from osmpandas.package import OSMDataPackage
 
     data = OSMDataPackage.load(input_file)
     print(data)

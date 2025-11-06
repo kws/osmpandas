@@ -1,121 +1,186 @@
+import tarfile
+import tempfile
 from collections.abc import Callable
-from typing import Literal, NamedTuple
+from pathlib import Path
 
 import osmium as osm
-import pandas as pd
-from osmium.osm import Node, Relation, Way
+import pyarrow as pa
+import pyarrow.parquet as pq
 
-from osmpandas import data
+NODE_SCHEMA = pa.schema(
+    [
+        ("id", pa.int64()),
+        ("lon", pa.float64()),
+        ("lat", pa.float64()),
+    ]
+)
+WAY_SCHEMA = pa.schema(
+    [
+        ("id", pa.int64()),
+        ("u", pa.int64()),
+        ("v", pa.int64()),
+    ]
+)
+RELATION_SCHEMA = pa.schema(
+    [
+        ("id", pa.int64()),
+        ("owner_id", pa.int64()),
+        ("type", pa.utf8()),
+        ("role", pa.utf8()),
+    ]
+)
+TAG_SCHEMA = pa.schema(
+    [
+        ("ref", pa.int64()),
+        ("key", pa.utf8()),
+        ("value", pa.utf8()),
+    ]
+)
 
-__all__ = ["ParquetGraphHandler"]
 
-
-class NodeTuple(NamedTuple):
-    id: int
-    lon: float
-    lat: float
-    tags: dict | None
-
-
-class WayTuple(NamedTuple):
-    id: int
-    u: int
-    v: int
-    tags: dict | None
-
-
-class RelationTuple(NamedTuple):
-    id: int
-    ref: int
-    type: Literal["n", "w", "r"]
-    role: str
-
-
-class TagTuple(NamedTuple):
-    owner_id: int
-    key: str
-    value: str
-
-
-class ParquetGraphHandler(osm.SimpleHandler):
+class TableWriter:
     def __init__(
         self,
-        progress_callback: Callable[[Literal["nodes", "ways", "relations"], int], None]
-        | None = None,
+        path: Path,
+        name: str,
+        schema: pa.Schema,
+        *,
+        batch: int = 500_000,
+        progress_callback: Callable[..., None] | None = None,
+    ):
+        self._progress_callback = progress_callback
+        self._log_batch = 1_000
+        self._log_counter = 0
+        self._path = path
+        self._batch = batch
+        self._name = name
+        self._schema = schema
+        self._writer = pq.ParquetWriter(
+            (path / name).with_suffix(".parquet"), schema, compression="zstd"
+        )
+        self._data = {k: [] for k in schema.names}
+
+    def add(self, *args):
+        for k, v in zip(self._schema.names, args, strict=True):
+            self._data[k].append(v)
+        if self._progress_callback is not None:
+            self._log_counter += 1
+            if self._log_counter >= self._log_batch:
+                self._log_progress()
+        if len(self._data[k]) >= self._batch:
+            self.flush()
+
+    def _log_progress(self):
+        self._progress_callback(**{self._name: self._log_counter})
+        self._log_counter = 0
+
+    def flush(self):
+        n = len(self._data[self._schema.names[0]])
+        if n == 0:
+            return
+        batch = pa.Table.from_arrays(
+            [pa.array(self._data[k]) for k in self._schema.names], names=self._schema.names
+        )
+        self._writer.write_table(batch)
+        self._data = {k: [] for k in self._schema.names}
+        if self._progress_callback is not None:
+            self._log_progress()
+
+    def close(self):
+        self.flush()
+        self._writer.close()
+
+
+class ObjectWriter:
+    def __init__(
+        self,
+        path,
+        name,
+        schema,
+        *,
+        batch: int = 500_000,
+        progress_callback: Callable[..., None] | None = None,
+    ):
+        self._object_writer = TableWriter(
+            path, name, schema, batch=batch, progress_callback=progress_callback
+        )
+        self._tag_writer = TableWriter(
+            path,
+            f"{name}_tag",
+            TAG_SCHEMA,
+            batch=batch,
+        )
+
+    def add(self, *args):
+        self._object_writer.add(*args)
+
+    def add_tag(self, *args):
+        self._tag_writer.add(*args)
+
+    def close(self):
+        self._object_writer.close()
+        self._tag_writer.close()
+
+
+class StreamHandler(osm.SimpleHandler):
+    def __init__(
+        self, path, *, progress_callback: Callable[..., None] | None = None, batch=500_000
     ):
         super().__init__()
+        self.progress_callback = progress_callback
+        self.batch = batch
+        self.node_writer = ObjectWriter(
+            path, "node", NODE_SCHEMA, batch=batch, progress_callback=progress_callback
+        )
+        self.way_writer = ObjectWriter(
+            path, "way", WAY_SCHEMA, batch=batch, progress_callback=progress_callback
+        )
+        self.relation_writer = ObjectWriter(
+            path, "relation", RELATION_SCHEMA, batch=batch, progress_callback=progress_callback
+        )
 
-        self.nodes: list[NodeTuple] = []
-        self.node_tags: list[TagTuple] = []
-        self.ways: list[WayTuple] = []
-        self.way_tags: list[TagTuple] = []
-        self.relation_members: list[RelationTuple] = []
-        self.relation_tags: list[TagTuple] = []
+    def node(self, n):
+        if not n.location.valid():  # safety
+            return
+        for t in n.tags:
+            self.node_writer.add_tag(n.id, t.k, t.v)
+        self.node_writer.add(n.id, n.location.lon, n.location.lat)
 
-        self.progress_callback = progress_callback or (lambda x: None)
-
-    def node(self, n: Node):
-        self.nodes.append(NodeTuple(id=n.id, lon=n.location.lon, lat=n.location.lat, tags=None))
-        for tag in n.tags:
-            self.node_tags.append(TagTuple(owner_id=n.id, key=tag.k, value=tag.v))
-
-        self.progress_callback(nodes=1)
-
-    def way(self, w: Way):
-        # only process ways that have nodes
+    def way(self, w):
         if len(w.nodes) < 2:
             return
-        # Build pairwise edges
-        node_ids = [n.ref for n in w.nodes]
-        for u, v in zip(node_ids[:-1], node_ids[1:], strict=False):
-            self.ways.append(WayTuple(id=w.id, u=u, v=v, tags=None))
-        for tag in w.tags:
-            self.way_tags.append(TagTuple(owner_id=w.id, key=tag.k, value=tag.v))
 
-        self.progress_callback(ways=1)
+        for t in w.tags:
+            self.way_writer.add_tag(w.id, t.k, t.v)
 
-    def relation(self, r: Relation):
-        relation_id = r.id
+        node_ids = [nd.ref for nd in w.nodes]
+        wid = w.id
+        for u, v in zip(node_ids[:-1], node_ids[1:], strict=True):
+            self.way_writer.add(wid, u, v)
 
-        members = [
-            RelationTuple(id=relation_id, ref=member.ref, type=member.type, role=member.role)
-            for member in r.members
-        ]
-        self.relation_members.extend(members)
-        tags = [TagTuple(owner_id=relation_id, key=tag.k, value=tag.v) for tag in r.tags]
-        self.relation_tags.extend(tags)
+    def relation(self, r):
+        for t in r.tags:
+            self.relation_writer.add_tag(r.id, t.k, t.v)
+        for m in r.members:
+            self.relation_writer.add(r.id, m.ref, m.type, m.role)
 
-        self.progress_callback(relations=1)
+    def close(self):
+        self.node_writer.close()
+        self.way_writer.close()
+        self.relation_writer.close()
 
-    def to_osm_data_package(self) -> data.OSMDataPackage:
-        df_nodes = (
-            pd.DataFrame(self.nodes, columns=["id", "lon", "lat", "tags"])
-            .set_index("id")
-            .drop(columns=["tags"])
-        )
-        df_node_tags = pd.DataFrame(self.node_tags, columns=["owner_id", "key", "value"]).set_index(
-            ["owner_id", "key"]
-        )
-        df_ways = (
-            pd.DataFrame(self.ways, columns=["id", "u", "v", "tags"])
-            .set_index(["id", "u", "v"])
-            .drop(columns=["tags"])
-        )
-        df_way_tags = pd.DataFrame(self.way_tags, columns=["owner_id", "key", "value"]).set_index(
-            ["owner_id", "key"]
-        )
-        df_relation_members = pd.DataFrame(
-            self.relation_members, columns=["id", "ref", "type", "role"]
-        ).set_index(["id", "ref"])
-        df_relation_tags = pd.DataFrame(
-            self.relation_tags, columns=["owner_id", "key", "value"]
-        ).set_index(["owner_id", "key"])
 
-        return data.OSMDataPackage(
-            nodes=df_nodes,
-            node_tags=df_node_tags,
-            ways=df_ways,
-            way_tags=df_way_tags,
-            relation_members=df_relation_members,
-            relation_tags=df_relation_tags,
-        )
+def convert_osm_to_parquet(
+    pbf_file: str | Path,
+    output_file: str | Path,
+    progress_callback: Callable[..., None] | None = None,
+):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        handler = StreamHandler(tmpdir, progress_callback=progress_callback)
+        handler.apply_file(pbf_file, locations=True)
+        handler.close()
+
+        with tarfile.open(output_file, "w") as tar:
+            for name in sorted(tmpdir.glob("*.parquet")):
+                tar.add(name, arcname=name.name)
