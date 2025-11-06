@@ -76,6 +76,56 @@ def load(input_file: str):
 
 
 @cli.command()
+@click.argument("input_file", type=click.Path(exists=True))
+@click.option("-o", "--output", "output_file", type=click.Path(), required=True)
+@click.option("-q", "--query", type=str)
+@click.option("-t", "--tags", type=str, multiple=True)
+@click.option(
+    "-r",
+    "--restrict",
+    type=str,
+    multiple=True,
+    help="Restrict ways by a tag key and value. For example -r railway=rail -r railway=subway",
+)
+@click_log.simple_verbosity_option()
+def to_geojson(
+    input_file: str,
+    output_file: str,
+    query: str | None,
+    tags: list[str] | None,
+    restrict: list[str] | None,
+):
+    from osmpandas.package import OSMDataPackage
+
+    data = OSMDataPackage.load(input_file)
+
+    ways = data.ways
+    if query:
+        tag_df = data.way_tags.pivot(index="ref", columns="key", values="value")
+        tag_df = tag_df.query(query)
+        ways = ways[ways.id.isin(tag_df.index)]
+
+    if restrict:
+        constraints = defaultdict(set)
+        for r in restrict:
+            key, value = r.split("=")
+            constraints[key].add(value)
+
+        tag_df = data.way_tags
+        for key, values in constraints.items():
+            matches = tag_df[(tag_df.key == key) & (tag_df.value.isin(values))].ref
+            tag_df = tag_df[tag_df.ref.isin(matches)]
+        ways = ways[ways.id.isin(tag_df.ref)]
+
+    ways = data.get_ways(ways)
+
+    if tags:
+        ways = ways.osm.expand_tags(data.way_tags, *tags)
+
+    ways.to_file(output_file, driver="GeoJSON")
+
+
+@cli.command()
 @click.argument("input_file", type=click.Path())
 @click.argument("output_file", type=click.Path(), default=None)
 @click.option("--types", type=str, default="nwr")

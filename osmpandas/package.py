@@ -1,10 +1,13 @@
 import logging
 import tarfile
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any
 
+import geopandas as gpd
+import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
+import shapely
 
 from .pandas import OSMDataFrame
 
@@ -14,13 +17,39 @@ logger = logging.getLogger(__name__)
 __all__ = ["OSMDataPackage"]
 
 
-class OSMDataPackage(NamedTuple):
-    nodes: pd.DataFrame
-    node_tags: pd.DataFrame
-    ways: pd.DataFrame
-    way_tags: pd.DataFrame
-    relation_members: pd.DataFrame
-    relation_tags: pd.DataFrame
+class OSMDataPackage:
+    def __init__(self, **kwargs):
+        self.__data = dict(kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        if name in self.__data:
+            value = self.__data[name]
+            if hasattr(value, "copy"):
+                return value.copy()
+            return value
+        return object.__getattribute__(self, name)
+
+    def get_ways(self, ways: pd.DataFrame | None = None) -> gpd.GeoDataFrame:
+        """
+        The OSM Data Package format stores ways as single segments. This function converts them
+        into a GeoDataFrame of LineStrings or MultiLineStrings.
+        """
+        ways = self.ways if ways is None else ways.copy()
+
+        nodes = self.nodes.set_index("id")
+        df = ways.merge(nodes, left_on="u", right_index=True, how="left").merge(
+            nodes, left_on="v", right_index=True, how="inner", suffixes=("_u", "_v")
+        )
+
+        start_points = np.stack([df.lon_u, df.lat_u], axis=1)
+        end_points = np.stack([df.lon_v, df.lat_v], axis=1)
+        coords = np.stack([start_points, end_points], axis=1)
+        df["geometry"] = shapely.linestrings(coords, handle_nan="error")
+        df.drop(columns=["u", "v", "lon_u", "lat_u", "lon_v", "lat_v"], inplace=True)
+
+        df = gpd.GeoDataFrame(df, geometry="geometry", crs="EPSG:4326")
+        df = df.dissolve(by=["id"])
+        return df
 
     @staticmethod
     def load(path: str | Path) -> "OSMDataPackage":
@@ -38,16 +67,19 @@ class OSMDataPackage(NamedTuple):
         logger.debug(f"Loaded objects: {', '.join(objects.keys())}")
         if "node" and "node_tag" in objects:
             logger.debug("Creating node OSMDataFrame")
-            objects["node"] = OSMDataFrame(objects["node"])
-            objects["node"].tag_dataframe = objects["node_tag"]
+            df = OSMDataFrame(objects["node"])
+            df.tag_dataframe = objects.get("node_tag")
+            objects["node"] = df
         if "way" and "way_tag" in objects:
             logger.debug("Creating way OSMDataFrame")
-            objects["way"] = OSMDataFrame(objects["way"])
-            objects["way"].tag_dataframe = objects["way_tag"]
+            df = OSMDataFrame(objects["way"])
+            df.tag_dataframe = objects.get("way_tag")
+            objects["way"] = df
         if "relation" and "relation_tag" in objects:
             logger.debug("Creating relation OSMDataFrame")
-            objects["relation"] = OSMDataFrame(objects["relation"])
-            objects["relation"].tag_dataframe = objects["relation_tag"]
+            df = OSMDataFrame(objects["relation"])
+            df.tag_dataframe = objects.get("relation_tag")
+            objects["relation"] = df
 
         return OSMDataPackage(
             nodes=objects.get("node"),
@@ -59,13 +91,17 @@ class OSMDataPackage(NamedTuple):
         )
 
     def __repr__(self) -> str:
-        return (
-            f"OSMDataPackage("
-            f"nodes/tags={len(self.nodes):,d}/{len(self.node_tags):,d}, "
-            f"ways/tags={len(self.ways):,d}/{len(self.way_tags):,d}, "
-            f"relations/tags={len(self.relation_members):,d}/{len(self.relation_tags):,d}"
-            f")"
-        )
+        parts = {}
+        for obj_key, tags_key in [
+            ("nodes", "node_tags"),
+            ("ways", "way_tags"),
+            ("relation_members", "relation_tags"),
+        ]:
+            obj_count = len(self.__data.get(obj_key, pd.DataFrame()))
+            tags_count = len(self.__data.get(tags_key, pd.DataFrame()))
+            parts[obj_key] = f"{obj_count:,d}/{tags_count:,d}"
+
+        return f"OSMDataPackage({', '.join([f'{k}: {v}' for k, v in parts.items()])})"
 
 
 def to_excel(

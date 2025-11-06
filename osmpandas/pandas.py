@@ -20,10 +20,7 @@ class OSMAccessor:
         self._obj = pandas_obj
 
     def expand_tags(self, *args) -> pd.DataFrame:
-        if len(args) == 0:
-            raise ValueError("No tags provided")
-
-        first_arg = args[0]
+        first_arg = args[0] if args else None
         if isinstance(first_arg, pd.DataFrame):
             tags_df = first_arg
             args = args[1:]
@@ -35,10 +32,8 @@ class OSMAccessor:
                 "dataframe as the first argument"
             )
 
-        if len(args) == 1 and args[0] == "*":
-            pass
-        else:
+        if args:
             tags_df = tags_df[tags_df.key.isin(args)]
 
         tags_df = tags_df.pivot(index="ref", columns="key", values="value")
-        return self._obj.merge(tags_df, left_index=True, right_index=True, how="left")
+        return self._obj.merge(tags_df, left_on="id", right_index=True, how="left")
