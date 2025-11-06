@@ -8,7 +8,7 @@ def cli():
     pass
 
 
-@click.command()
+@cli.command()
 @click.argument("input_file", type=click.Path(exists=True))
 @click.option("--force", is_flag=True, help="Force overwrite of existing output file")
 @click.option("--no-progress", is_flag=True, help="Hide the progress bar")
