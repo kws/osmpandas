@@ -1,14 +1,12 @@
-import io
 import logging
 import tarfile
-import tempfile
 from pathlib import Path
-from time import time
 from typing import NamedTuple
 
 import pandas as pd
-import pyarrow as pa
 import pyarrow.parquet as pq
+
+from .pandas import OSMDataFrame
 
 logger = logging.getLogger(__name__)
 
@@ -24,17 +22,10 @@ class OSMDataPackage(NamedTuple):
     relation_members: pd.DataFrame
     relation_tags: pd.DataFrame
 
-    def save(self, path: str | Path):
-        with tarfile.open(path, "w") as tar:
-            _add_parquet_to_tar(tar, "nodes.parquet", self.nodes)
-            _add_parquet_to_tar(tar, "node_tags.parquet", self.node_tags)
-            _add_parquet_to_tar(tar, "ways.parquet", self.ways)
-            _add_parquet_to_tar(tar, "way_tags.parquet", self.way_tags)
-            _add_parquet_to_tar(tar, "relation_members.parquet", self.relation_members)
-            _add_parquet_to_tar(tar, "relation_tags.parquet", self.relation_tags)
-
     @staticmethod
     def load(path: str | Path) -> "OSMDataPackage":
+        logger.debug(f"Loading OSMDataPackage from {path}")
+
         objects = {}
         with tarfile.open(path, "r") as tar:
             for member in tar:
@@ -44,7 +35,20 @@ class OSMDataPackage(NamedTuple):
                     table = pq.read_table(fileobj).to_pandas()
                     objects[file_name.stem] = table
 
-        print(objects.keys())
+        logger.debug(f"Loaded objects: {', '.join(objects.keys())}")
+        if "node" and "node_tag" in objects:
+            logger.debug("Creating node OSMDataFrame")
+            objects["node"] = OSMDataFrame(objects["node"])
+            objects["node"].tag_dataframe = objects["node_tag"]
+        if "way" and "way_tag" in objects:
+            logger.debug("Creating way OSMDataFrame")
+            objects["way"] = OSMDataFrame(objects["way"])
+            objects["way"].tag_dataframe = objects["way_tag"]
+        if "relation" and "relation_tag" in objects:
+            logger.debug("Creating relation OSMDataFrame")
+            objects["relation"] = OSMDataFrame(objects["relation"])
+            objects["relation"].tag_dataframe = objects["relation_tag"]
+
         return OSMDataPackage(
             nodes=objects.get("node"),
             node_tags=objects.get("node_tag"),
@@ -64,21 +68,32 @@ class OSMDataPackage(NamedTuple):
         )
 
 
-def _add_parquet_to_tar(
-    tar: tarfile.TarFile, arcname: str, df: pd.DataFrame, mem_limit=64 * 1024 * 1024
+def to_excel(
+    output_file: str,
+    data: OSMDataPackage,
+    *,
+    export_nodes: bool = True,
+    export_ways: bool = True,
+    export_relations: bool = True,
 ):
-    with tempfile.SpooledTemporaryFile(max_size=mem_limit) as buf:
-        table = pa.Table.from_pandas(df, preserve_index=True)
-        pq.write_table(table, buf)
-        buf.seek(0, io.SEEK_END)
-        size = buf.tell()
-        buf.seek(0)
+    if not (export_nodes | export_ways | export_relations):
+        raise ValueError(
+            "At least one of export_nodes, export_ways, or export_relations must be True"
+        )
 
-        info = tarfile.TarInfo(arcname)
-        info.size = size
-        info.mtime = int(time())
-
-        buf.seek(0, 2)
-        info.size = buf.tell()
-        buf.seek(0)
-        tar.addfile(info, fileobj=buf)
+    with pd.ExcelWriter(output_file) as writer:
+        if export_nodes:
+            logger.info("Writing nodes to Excel")
+            nodes = data.nodes.osm.expand_tags("*")
+            logger.debug("Writing %s rows with %s tags", *nodes.shape)
+            nodes.to_excel(writer, sheet_name="nodes")
+        if export_ways:
+            logger.info("Writing ways to Excel")
+            ways = data.ways.osm.expand_tags("*")
+            logger.debug("Writing %s rows with %s tags", *ways.shape)
+            ways.to_excel(writer, sheet_name="ways")
+        if export_relations:
+            logger.info("Writing relations to Excel")
+            relations = data.relation_members.osm.expand_tags("*")
+            logger.debug("Writing %s rows with %s tags", *relations.shape)
+            relations.to_excel(writer, sheet_name="relations")
