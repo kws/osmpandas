@@ -1,0 +1,26 @@
+repos:
+  # Core hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-toml
+
+  # Ruff: lint (inc. isort fix) + format
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]     # includes import-sorting when "I" is in select
+      - id: ruff-format   # Black-like formatter
+
+  # (Optional) Spellcheck common typos in code/comments
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.3.0
+    hooks:
+      - id: codespell
+        additional_dependencies: []
+        args: ["-L", "nd"]  # add project-specific false positives here

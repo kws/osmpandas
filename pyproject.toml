@@ -1,0 +1,71 @@
+[project]
+name = "osmpandas"
+version = "0.1.0"
+description = "Utilities for working with OSM data in pandas"
+authors = [
+    {name = "Kaj Siebert",email = "kaj@k-si.com"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.14.3"
+pre-commit = "^4.3.0"
+pytest = "^8.4.2"
+pytest-cov = "^7.0.0"
+mypy = "^1.18.2"
+
+# ---------- Ruff (formatter + lint + isort) ----------
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.format]
+# Ruff's formatter is Black-like; defaults are fine.
+# Add choices here if you prefer (e.g., indent-style = "space").
+
+[tool.ruff.lint]
+# A pragmatic, low-noise rule set that replaces flake8 + isort + pyupgrade + bugbear core bits.
+select = [
+  "E",   # pycodestyle errors
+  "F",   # pyflakes
+  "W",   # pycodestyle warnings
+  "I",   # isort (import sorting)
+  "UP",  # pyupgrade
+  "B",   # bugbear (sane defaults)
+  "SIM", # simplify
+  "C4"   # comprehensions
+]
+ignore = [
+  "E203",  # space before : (Black/Ruff formatting compatibility)
+]
+# Tweak per your codebase:
+exclude = ["build", "dist", ".venv", "venv", ".git", ".mypy_cache", ".ruff_cache"]
+
+[tool.ruff.lint.isort]
+# Make import sorting aware of your own package(s):
+known-first-party = ["osmpandas"]
+
+# ---------- Pytest ----------
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers --disable-warnings"
+testpaths = ["tests"]
+
+# ---------- Mypy (optional but recommended) ----------
+[tool.mypy]
+python_version = "3.12"
+warn_unused_configs = true
+ignore_missing_imports = true
+pretty = true
+show_error_codes = true
+strict = false
+# Turn this on per-module as you tighten things:
+# strict = true
