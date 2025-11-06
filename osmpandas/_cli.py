@@ -1,6 +1,26 @@
+from collections import defaultdict
+from contextlib import contextmanager
 from pathlib import Path
 
 import click
+from tqdm import tqdm
+
+
+@contextmanager
+def progress_counter():
+    counter = defaultdict(lambda: 0)
+
+    def format_progress() -> str:
+        return ", ".join(f"{key}: {value:^10,d}" for key, value in counter.items())
+
+    with tqdm() as pbar:
+
+        def progress_callback(**kwargs):
+            for key, value in kwargs.items():
+                counter[key] += value
+            pbar.set_description(format_progress())
+
+        yield progress_callback
 
 
 @click.group()
@@ -26,13 +46,24 @@ def convert(input_file: str, output_file: str | None):
     from osmpandas.data import OSMDataPackage
 
     input_file = Path(input_file)
-    data = OSMDataPackage.from_osm(input_file)
+    with progress_counter() as progress_callback:
+        data = OSMDataPackage.from_osm(input_file, progress_callback=progress_callback)
+
     if output_file is None:
         if input_file.name.endswith(".osm.pbf"):
-            output_file = output_file.replace(".osm.pbf", ".osmpkg")
+            output_file = input_file.name.replace(".osm.pbf", ".osmpkg")
         else:
             output_file = input_file.with_suffix(".osmpkg")
     data.save(output_file)
+
+
+@cli.command()
+@click.argument("input_file", type=click.Path(exists=True))
+def load(input_file: str):
+    from osmpandas.data import OSMDataPackage
+
+    data = OSMDataPackage.load(input_file)
+    print(data)
 
 
 @cli.command()

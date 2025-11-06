@@ -2,9 +2,10 @@ import io
 import logging
 import tarfile
 import tempfile
-from collections.abc import Callable, NamedTuple
+from collections.abc import Callable
 from pathlib import Path
 from time import time
+from typing import NamedTuple
 
 import pandas as pd
 import pyarrow as pa
@@ -35,29 +36,22 @@ class OSMDataPackage(NamedTuple):
 
     @staticmethod
     def load(path: str | Path) -> "OSMDataPackage":
+        objects = {}
         with tarfile.open(path, "r") as tar:
             for member in tar:
-                if member.name == "nodes.parquet":
-                    df_nodes = pq.read_table(member.fileobj).to_pandas()
-                elif member.name == "node_tags.parquet":
-                    df_node_tags = pq.read_table(member.fileobj).to_pandas()
-                elif member.name == "ways.parquet":
-                    df_ways = pq.read_table(member.fileobj).to_pandas()
-                elif member.name == "way_tags.parquet":
-                    df_way_tags = pq.read_table(member.fileobj).to_pandas()
-                elif member.name == "relation_members.parquet":
-                    df_relation_members = pq.read_table(member.fileobj).to_pandas()
-                elif member.name == "relation_tags.parquet":
-                    df_relation_tags = pq.read_table(member.fileobj).to_pandas()
-                else:
-                    logger.warning(f"Unknown member: {member.name}")
+                if member.isfile():
+                    file_name = Path(member.name)
+                    fileobj = tar.extractfile(member)
+                    table = pq.read_table(fileobj).to_pandas()
+                    objects[file_name.stem] = table
+
         return OSMDataPackage(
-            nodes=df_nodes,
-            node_tags=df_node_tags,
-            ways=df_ways,
-            way_tags=df_way_tags,
-            relation_members=df_relation_members,
-            relation_tags=df_relation_tags,
+            nodes=objects.get("nodes"),
+            node_tags=objects.get("node_tags"),
+            ways=objects.get("ways"),
+            way_tags=objects.get("way_tags"),
+            relation_members=objects.get("relation_members"),
+            relation_tags=objects.get("relation_tags"),
         )
 
     @staticmethod
@@ -73,12 +67,10 @@ class OSMDataPackage(NamedTuple):
     def __repr__(self) -> str:
         return (
             f"OSMDataPackage("
-            f"nodes={len(self.nodes)}, "
-            f"node_tags={len(self.node_tags)}, "
-            f"ways={len(self.ways)}, "
-            f"way_tags={len(self.way_tags)}, "
-            f"relation_members={len(self.relation_members)}, "
-            f"relation_tags={len(self.relation_tags)})"
+            f"nodes/tags={len(self.nodes):,d}/{len(self.node_tags):,d}, "
+            f"ways/tags={len(self.ways):,d}/{len(self.way_tags):,d}, "
+            f"relations/tags={len(self.relation_members):,d}/{len(self.relation_tags):,d}"
+            f")"
         )
 
 

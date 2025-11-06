@@ -30,12 +30,15 @@ def check_osmium() -> bool:
 def tags_filter(
     file_path: Path | str,
     *,
-    file_suffix: str = "-railway",
+    file_suffix: str = None,
     tags: list[str] = DEFAULT_RAILWAY_TAGS,
     force: bool = False,
     progress: bool = True,
 ) -> Path:
     file_path = Path(file_path)
+
+    if file_suffix is None:
+        file_suffix = "-railway"
 
     file_stem = file_path.stem
     if ".osm" in file_stem:
