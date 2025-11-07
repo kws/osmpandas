@@ -76,6 +76,22 @@ def load(input_file: str):
 
 
 @cli.command()
+@click.argument("input_files", type=click.Path(exists=True), nargs=-1)
+@click.option("-o", "--output", "output_file", type=click.Path(), required=True)
+def merge(input_files: list[str], output_file: str):
+    from osmpandas.package import OSMDataPackage
+
+    click.echo(f"Loading {input_files[0]}")
+    data = OSMDataPackage.load(input_files[0])
+    for input_file in input_files[1:]:
+        click.echo(f"Adding {input_file}")
+        data = data.merge(input_file)
+
+    click.echo(f"Saving to {output_file}")
+    data.save(output_file)
+
+
+@cli.command()
 @click.argument("input_file", type=click.Path(exists=True))
 @click.option("-o", "--output", "output_file", type=click.Path(), required=True)
 @click.option("-q", "--query", type=str)
@@ -120,7 +136,7 @@ def to_geojson(
     ways = data.get_ways(ways)
 
     if tags:
-        ways = ways.osm.expand_tags(data.way_tags, *tags)
+        ways = ways.osm.expand_tags(data.way_tag, *tags)
 
     ways.to_file(output_file, driver="GeoJSON")
 

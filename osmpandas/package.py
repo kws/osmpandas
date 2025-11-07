@@ -1,13 +1,15 @@
 import logging
 import sys
 import tarfile
+import tempfile
 from difflib import get_close_matches
 from pathlib import Path
-from typing import Any
+from typing import Any, Union
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pyarrow.parquet as pq
 import shapely
 
@@ -88,6 +90,69 @@ class OSMDataPackage:
         df = gpd.GeoDataFrame(df, geometry="geometry", crs="EPSG:4326")
         df = df.dissolve(by=["id"])
         return df
+
+    def merge(self, other: Union["OSMDataPackage", str, Path]) -> "OSMDataPackage":
+        """
+        Merge this OSMDataPackage with another OSMDataPackage.
+        """
+        if isinstance(other, str | Path):
+            other = OSMDataPackage.load(other)
+
+        nodes = pd.concat([self.node, other.node])
+        nodes.drop_duplicates(subset="id", inplace=True)
+
+        ways = pd.concat([self.way, other.way])
+        ways.drop_duplicates(subset=["id", "u", "v"], inplace=True)
+
+        relations = pd.concat([self.relation, other.relation])
+        relations.drop_duplicates(subset=["id", "owner_id", "type", "role"], inplace=True)
+
+        node_tags = pd.concat([self.node_tag, other.node_tag])
+        node_tags.drop_duplicates(subset=["ref", "key", "value"], inplace=True)
+
+        way_tags = pd.concat([self.way_tag, other.way_tag])
+        way_tags.drop_duplicates(subset=["ref", "key", "value"], inplace=True)
+
+        relation_tags = pd.concat([self.relation_tag, other.relation_tag])
+        relation_tags.drop_duplicates(subset=["ref", "key", "value"], inplace=True)
+
+        return OSMDataPackage(
+            node=nodes,
+            node_tag=node_tags,
+            way=ways,
+            way_tag=way_tags,
+            relation=relations,
+            relation_tag=relation_tags,
+        )
+
+    def save(self, path: str | Path):
+        """
+        Save the OSMDataPackage to a file.
+        """
+        path = Path(path)
+        logger.debug(f"Saving OSMDataPackage to {path}")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+
+            # Write each DataFrame to a parquet file
+            for name in ALL_DF_NAMES:
+                df = self.__data.get(name)
+                if df is not None and len(df) > 0:
+                    # Convert DataFrame to PyArrow Table
+                    table = pa.Table.from_pandas(df)
+                    # Write to parquet file with zstd compression (matching osm_parser.py)
+                    parquet_path = tmpdir / f"{name}.parquet"
+                    pq.write_table(table, parquet_path, compression="zstd")
+                    logger.debug(f"Wrote {name} with {len(df):,d} rows to {parquet_path}")
+
+            # Create tar file containing all parquet files
+            with tarfile.open(path, "w") as tar:
+                for parquet_file in sorted(tmpdir.glob("*.parquet")):
+                    tar.add(parquet_file, arcname=parquet_file.name)
+                    logger.debug(f"Added {parquet_file.name} to tar archive")
+
+        logger.info(f"Saved OSMDataPackage to {path}")
 
     @staticmethod
     def load(path: str | Path) -> "OSMDataPackage":
