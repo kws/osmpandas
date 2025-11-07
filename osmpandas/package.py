@@ -1,5 +1,7 @@
 import logging
+import sys
 import tarfile
+from difflib import get_close_matches
 from pathlib import Path
 from typing import Any
 
@@ -16,9 +18,33 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["OSMDataPackage"]
 
+DF_NAME_NODE = "node"
+DF_NAME_NODE_TAG = "node_tag"
+DF_NAME_WAY = "way"
+DF_NAME_WAY_TAG = "way_tag"
+DF_NAME_RELATION = "relation"
+DF_NAME_RELATION_TAG = "relation_tag"
+
+NODE_PARS = (DF_NAME_NODE, DF_NAME_NODE_TAG)
+WAY_PARS = (DF_NAME_WAY, DF_NAME_WAY_TAG)
+RELATION_PARS = (DF_NAME_RELATION, DF_NAME_RELATION_TAG)
+
+ALL_DF_NAMES = [
+    DF_NAME_NODE,
+    DF_NAME_NODE_TAG,
+    DF_NAME_WAY,
+    DF_NAME_WAY_TAG,
+    DF_NAME_RELATION,
+    DF_NAME_RELATION_TAG,
+]
+
 
 class OSMDataPackage:
     def __init__(self, **kwargs):
+        # Check that we get recognised names
+        assert set(kwargs.keys()) == set(
+            ALL_DF_NAMES
+        ), f"Invalid keys: {set(kwargs.keys()) - set(ALL_DF_NAMES)}"
         self.__data = dict(kwargs)
 
     def __getattr__(self, name: str) -> Any:
@@ -27,16 +53,28 @@ class OSMDataPackage:
             if hasattr(value, "copy"):
                 return value.copy()
             return value
-        return object.__getattribute__(self, name)
+        try:
+            return object.__getattribute__(self, name)
+        except AttributeError:
+            close_matches = get_close_matches(name, ALL_DF_NAMES)
+            if close_matches:
+                # Trim the traceback to hide this frame
+                _exc_type, _exc, tb = sys.exc_info()
+                if tb and tb.tb_next:
+                    tb = tb.tb_next  # drop the current frame
+                raise AttributeError(
+                    f"Invalid attribute: {name}. Did you mean {close_matches[0]}?"
+                ).with_traceback(tb) from None
+            raise
 
     def get_ways(self, ways: pd.DataFrame | None = None) -> gpd.GeoDataFrame:
         """
         The OSM Data Package format stores ways as single segments. This function converts them
         into a GeoDataFrame of LineStrings or MultiLineStrings.
         """
-        ways = self.ways if ways is None else ways.copy()
+        ways = self.way if ways is None else ways.copy()
 
-        nodes = self.nodes.set_index("id")
+        nodes = self.node.set_index("id")
         df = ways.merge(nodes, left_on="u", right_index=True, how="left").merge(
             nodes, left_on="v", right_index=True, how="inner", suffixes=("_u", "_v")
         )
@@ -65,38 +103,27 @@ class OSMDataPackage:
                     objects[file_name.stem] = table
 
         logger.debug(f"Loaded objects: {', '.join(objects.keys())}")
-        if "node" and "node_tag" in objects:
+        if DF_NAME_NODE and DF_NAME_NODE_TAG in objects:
             logger.debug("Creating node OSMDataFrame")
-            df = OSMDataFrame(objects["node"])
-            df.tag_dataframe = objects.get("node_tag")
-            objects["node"] = df
-        if "way" and "way_tag" in objects:
+            df = OSMDataFrame(objects[DF_NAME_NODE])
+            df.tag_dataframe = objects.get(DF_NAME_NODE_TAG)
+            objects[DF_NAME_NODE] = df
+        if DF_NAME_WAY and DF_NAME_WAY_TAG in objects:
             logger.debug("Creating way OSMDataFrame")
-            df = OSMDataFrame(objects["way"])
-            df.tag_dataframe = objects.get("way_tag")
-            objects["way"] = df
-        if "relation" and "relation_tag" in objects:
+            df = OSMDataFrame(objects[DF_NAME_WAY])
+            df.tag_dataframe = objects.get(DF_NAME_WAY_TAG)
+            objects[DF_NAME_WAY] = df
+        if DF_NAME_RELATION and DF_NAME_RELATION_TAG in objects:
             logger.debug("Creating relation OSMDataFrame")
-            df = OSMDataFrame(objects["relation"])
-            df.tag_dataframe = objects.get("relation_tag")
-            objects["relation"] = df
+            df = OSMDataFrame(objects[DF_NAME_RELATION])
+            df.tag_dataframe = objects.get(DF_NAME_RELATION_TAG)
+            objects[DF_NAME_RELATION] = df
 
-        return OSMDataPackage(
-            nodes=objects.get("node"),
-            node_tags=objects.get("node_tag"),
-            ways=objects.get("way"),
-            way_tags=objects.get("way_tag"),
-            relation_members=objects.get("relation"),
-            relation_tags=objects.get("relation_tag"),
-        )
+        return OSMDataPackage(**objects)
 
     def __repr__(self) -> str:
         parts = {}
-        for obj_key, tags_key in [
-            ("nodes", "node_tags"),
-            ("ways", "way_tags"),
-            ("relation_members", "relation_tags"),
-        ]:
+        for obj_key, tags_key in [NODE_PARS, WAY_PARS, RELATION_PARS]:
             obj_count = len(self.__data.get(obj_key, pd.DataFrame()))
             tags_count = len(self.__data.get(tags_key, pd.DataFrame()))
             parts[obj_key] = f"{obj_count:,d}/{tags_count:,d}"

@@ -99,7 +99,7 @@ def to_geojson(
 
     data = OSMDataPackage.load(input_file)
 
-    ways = data.ways
+    ways = data.way
     if query:
         tag_df = data.way_tags.pivot(index="ref", columns="key", values="value")
         tag_df = tag_df.query(query)
@@ -111,7 +111,7 @@ def to_geojson(
             key, value = r.split("=")
             constraints[key].add(value)
 
-        tag_df = data.way_tags
+        tag_df = data.way_tag
         for key, values in constraints.items():
             matches = tag_df[(tag_df.key == key) & (tag_df.value.isin(values))].ref
             tag_df = tag_df[tag_df.ref.isin(matches)]
